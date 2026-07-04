@@ -1,0 +1,16 @@
+services:
+  supervisor:
+    build: ./supervisor
+    container_name: mdbank_supervisor_agents
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./supervisor:/app
+
+  # frontend:
+  #   build: ./frontend
+  #   container_name: mdbank_frontend
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./frontend:/app
