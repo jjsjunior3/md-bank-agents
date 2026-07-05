@@ -3,6 +3,4 @@ uvicorn
 langchain
 langchain_openai
 langchain-community
-langgraph
-httpx
 python-dotenv

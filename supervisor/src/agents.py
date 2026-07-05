@@ -1,68 +1,53 @@
-from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+import logging
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
-# Usando OpenRouter (Gemini 2.5 Flash) para manter o custo baixo durante o estudo,
-# seguindo o mesmo padrão já usado no projeto langgraph-agents.
-__llm = ChatOpenAI(
+llm = ChatOpenAI(
     model="google/gemini-2.5-flash",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1",
-    temperature=0.7,
-)
-
-agente_cartao_credito = create_agent(
-    __llm,
-    tools=[],
-    system_prompt=(
-        "Você é um especialista em cartão de crédito do banco MDBank. "
-        "Ajude o cliente com dúvidas, solicitação e limites."
-    ),
-)
-
-agente_abertura_conta = create_agent(
-    __llm,
-    tools=[],
-    system_prompt=(
-        "Você é um especialista em abertura de contas do banco MDBank. "
-        "Ajude o cliente a abrir uma conta e explique os tipos disponíveis."
-    ),
+    temperature=0,
 )
 
 
-def classificar_pergunta(pergunta: str) -> str:
-    prompt = f"""
-    Classifique a intenção do usuário.
-
-    Possíveis agentes:
-    cartao_credito
-    abrir_conta
-
-    Pergunta: {pergunta}
-
-    Responda apenas com o nome do agente.
-    """
-    resposta = __llm.invoke(prompt)
-    return str(resposta.content).strip()
-
-
-async def executar_supervisor(texto_usuario: str) -> str:
-    agente = classificar_pergunta(texto_usuario)
-
-    if agente == "cartao_credito":
-        resultado = agente_cartao_credito.invoke(
-            {"messages": [HumanMessage(content=texto_usuario)]}
+class ClassificacaoIntencao(BaseModel):
+    agentes: list[str] = Field(
+        description=(
+            "Lista dos agentes que devem atender o cliente. "
+            "Valores possíveis: 'cartao_credito', 'abrir_conta'. "
+            "Pode conter um ou os dois valores, dependendo da necessidade do cliente."
         )
-    elif agente == "abrir_conta":
-        resultado = agente_abertura_conta.invoke(
-            {"messages": [HumanMessage(content=texto_usuario)]}
-        )
-    else:
-        return "Não consegui entender sua solicitação"
+    )
 
-    mensagem_ia = resultado["messages"][-1]
-    return str(mensagem_ia.content)
+
+parser = JsonOutputParser(pydantic_object=ClassificacaoIntencao)
+
+prompt = PromptTemplate(
+    template=(
+        "Classifique a intenção do usuário.\n\n"
+        "Possíveis agentes:\n"
+        "- cartao_credito\n"
+        "- abrir_conta\n\n"
+        "O cliente pode precisar de um ou dos dois agentes na mesma mensagem.\n\n"
+        "Pergunta: {pergunta}\n\n"
+        "{format_instructions}"
+    ),
+    input_variables=["pergunta"],
+    partial_variables={"format_instructions": parser.get_format_instructions()},
+)
+
+classificador = prompt | llm | parser
+
+
+def classificar_pergunta(pergunta: str) -> list[str]:
+    resultado = classificador.invoke({"pergunta": pergunta})
+    agentes = resultado.get("agentes", [])
+    logger.info(f"Agentes selecionados: {agentes}")
+    return agentes

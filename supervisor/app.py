@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from src.schemas import ChatRequest
-from src.agents import executar_supervisor
+from src.service import executar_supervisor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
