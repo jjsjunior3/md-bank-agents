@@ -7,10 +7,10 @@ services:
     volumes:
       - ./supervisor:/app
 
-  # frontend:
-  #   build: ./frontend
-  #   container_name: mdbank_frontend
-  #   ports:
-  #     - "9090:9090"
-  #   volumes:
-  #     - ./frontend:/app
+  frontend:
+    build: ./frontend
+    container_name: mdbank_frontend
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./frontend:/app
