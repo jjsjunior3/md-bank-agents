@@ -1,18 +1,65 @@
 import logging
 import operator
-import os
+import uuid
 from typing import Annotated, TypedDict
 
 import httpx
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 
+from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
+from a2a.types import Message, Part, Role, TextPart
+
 from src.agents import classificar_pergunta
 
 logger = logging.getLogger(__name__)
 
-ABRIR_CONTA_URL = os.getenv("ABRIR_CONTA_URL", "http://abrir_conta_agent:8000/consultar")
-CARTAO_CREDITO_URL = os.getenv("CARTAO_CREDITO_URL", "http://cartao_credito_agent:8000/consultar")
+HTTPX_CLIENT = httpx.AsyncClient(timeout=30)
+
+AGENTS = {
+    "cartao_credito": "http://cartao_credito_agent:8000",
+    "abrir_conta": "http://abrir_conta_agent:8000",
+}
+
+CLIENT_CACHE = {}
+
+
+async def request_agent(message: str, agent_url: str) -> str:
+    if agent_url not in CLIENT_CACHE:
+        logger.info(f"Descobrindo AgentCard em {agent_url}")
+
+        resolver = A2ACardResolver(
+            httpx_client=HTTPX_CLIENT,
+            base_url=agent_url,
+        )
+
+        agent_card = await resolver.get_agent_card()
+        logger.info(f"Agent encontrado: {agent_card.name}")
+
+        config = ClientConfig(
+            httpx_client=HTTPX_CLIENT,
+            streaming=False,
+        )
+        factory = ClientFactory(config)
+        CLIENT_CACHE[agent_url] = factory.create(agent_card)
+
+    client = CLIENT_CACHE[agent_url]
+
+    msg = Message(
+        role=Role.user,
+        message_id=str(uuid.uuid4()),
+        parts=[Part(root=TextPart(text=message))],
+    )
+
+    logger.info(f"Enviando mensagem para agente: {message}")
+
+    async for event in client.send_message(msg):
+        if isinstance(event, Message):
+            for part in event.parts:
+                if part.root.kind == "text":
+                    return part.root.text
+
+    return "Sem resposta do agente."
 
 
 class SupervisorState(TypedDict):
@@ -20,29 +67,19 @@ class SupervisorState(TypedDict):
     respostas: Annotated[list[str], operator.add]
 
 
-def _chamar_agente(url: str, query: str) -> str:
-    try:
-        response = httpx.post(url, json={"message": query}, timeout=60)
-        if response.status_code == 200:
-            return response.json().get("resposta", "Resposta não encontrada")
-        return f"Erro ao consultar agente (status {response.status_code})"
-    except Exception:
-        logger.exception(f"Erro ao consultar agente em {url}")
-        return "Erro ao consultar agente"
-
-
-def node_abrir_conta(state: SupervisorState) -> dict:
-    resposta = _chamar_agente(ABRIR_CONTA_URL, state["query"])
+async def node_abrir_conta(state: SupervisorState) -> dict:
+    resposta = await request_agent(state["query"], AGENTS["abrir_conta"])
     return {"respostas": [resposta]}
 
 
-def node_cartao_credito(state: SupervisorState) -> dict:
-    resposta = _chamar_agente(CARTAO_CREDITO_URL, state["query"])
+async def node_cartao_credito(state: SupervisorState) -> dict:
+    resposta = await request_agent(state["query"], AGENTS["cartao_credito"])
     return {"respostas": [resposta]}
 
 
 def router(state: SupervisorState):
     agentes = classificar_pergunta(state["query"])
+    logger.info(f"Agentes selecionados: {agentes}")
 
     destinos = []
     if "abrir_conta" in agentes:
@@ -64,7 +101,7 @@ grafo = builder.compile()
 
 
 async def executar_supervisor(texto_usuario: str) -> str:
-    resultado = grafo.invoke({"query": texto_usuario, "respostas": []})
+    resultado = await grafo.ainvoke({"query": texto_usuario, "respostas": []})
     respostas = resultado.get("respostas", [])
 
     if not respostas:
