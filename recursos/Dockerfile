@@ -15,4 +15,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
+ENV FASTMCP_HTTP_HOST_ORIGIN_PROTECTION=false
+
 CMD ["fastmcp", "run", "app.py:mcp", "--transport", "http", "--host", "0.0.0.0", "--port", "8000", "--path", "/mcp_gateway"]

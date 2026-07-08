@@ -18,7 +18,10 @@ async def chat_endpoint(payload: ChatRequest):
 
     try:
         logger.info(f"Mensagem recebida no /chat: {payload.message}")
-        resposta = await executar_supervisor(texto_usuario=payload.message)
+        resposta = await executar_supervisor(
+            texto_usuario=payload.message,
+            session_id=payload.session_id,
+        )
         logger.info(f"Resposta gerada: {resposta}")
         return {"resposta": resposta}
     except Exception as e:

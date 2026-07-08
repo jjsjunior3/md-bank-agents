@@ -1,4 +1,26 @@
 {
-  "contas": {},
-  "cartoes": {}
+  "contas": {
+    "12345678912": {
+      "nome": "Junior",
+      "numero": 32795,
+      "saldo": 0.0
+    },
+    "12345678900": {
+      "nome": "Jos\u00e9 Jo\u00e3o",
+      "numero": 28563,
+      "saldo": 0.0
+    }
+  },
+  "cartoes": {
+    "12345678912": {
+      "numero": 102644,
+      "tipo": "gold",
+      "limite": 2070
+    },
+    "12345678900": {
+      "numero": 970052,
+      "tipo": "mdzao",
+      "limite": 4864
+    }
+  }
 }

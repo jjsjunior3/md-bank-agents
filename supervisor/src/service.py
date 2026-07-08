@@ -23,6 +23,11 @@ AGENTS = {
 
 CLIENT_CACHE = {}
 
+# Memória simples de roteamento: lembra o(s) último(s) agente(s) usado(s) por sessão,
+# para continuar o fluxo quando a mensagem seguinte não tem intenção explícita
+# (ex: cliente manda só o CPF depois de já estar no fluxo de abertura de conta).
+SESSION_LAST_AGENTS: dict[str, list[str]] = {}
+
 
 async def request_agent(message: str, agent_url: str) -> str:
     if agent_url not in CLIENT_CACHE:
@@ -64,6 +69,7 @@ async def request_agent(message: str, agent_url: str) -> str:
 
 class SupervisorState(TypedDict):
     query: str
+    session_id: str
     respostas: Annotated[list[str], operator.add]
 
 
@@ -78,7 +84,18 @@ async def node_cartao_credito(state: SupervisorState) -> dict:
 
 
 def router(state: SupervisorState):
+    session_id = state["session_id"]
     agentes = classificar_pergunta(state["query"])
+
+    if not agentes:
+        # Sem intenção clara nessa mensagem: reaproveita o último agente
+        # usado nessa sessão, se existir (continuação de um fluxo já iniciado).
+        agentes = SESSION_LAST_AGENTS.get(session_id, [])
+        if agentes:
+            logger.info(f"Sem intenção explícita, reaproveitando última rota da sessão: {agentes}")
+    else:
+        SESSION_LAST_AGENTS[session_id] = agentes
+
     logger.info(f"Agentes selecionados: {agentes}")
 
     destinos = []
@@ -100,8 +117,10 @@ builder.add_edge("cartao_credito_node", END)
 grafo = builder.compile()
 
 
-async def executar_supervisor(texto_usuario: str) -> str:
-    resultado = await grafo.ainvoke({"query": texto_usuario, "respostas": []})
+async def executar_supervisor(texto_usuario: str, session_id: str = "default") -> str:
+    resultado = await grafo.ainvoke(
+        {"query": texto_usuario, "session_id": session_id, "respostas": []}
+    )
     respostas = resultado.get("respostas", [])
 
     if not respostas:
