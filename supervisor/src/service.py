@@ -1,7 +1,7 @@
 import logging
 import operator
 import uuid
-from typing import Annotated, TypedDict
+from typing import Annotated, AsyncGenerator, TypedDict
 
 import httpx
 from langgraph.graph import StateGraph, START, END
@@ -9,6 +9,16 @@ from langgraph.types import Send
 
 from a2a.client import A2ACardResolver, ClientFactory, ClientConfig
 from a2a.types import Message, Part, Role, TextPart
+
+from ag_ui.core import (
+    RunAgentInput,
+    EventType,
+    BaseEvent,
+    TextMessageStartEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
+    StateSnapshotEvent,
+)
 
 from src.agents import classificar_pergunta
 
@@ -22,29 +32,17 @@ AGENTS = {
 }
 
 CLIENT_CACHE = {}
-
-# Memória simples de roteamento: lembra o(s) último(s) agente(s) usado(s) por sessão,
-# para continuar o fluxo quando a mensagem seguinte não tem intenção explícita
-# (ex: cliente manda só o CPF depois de já estar no fluxo de abertura de conta).
 SESSION_LAST_AGENTS: dict[str, list[str]] = {}
 
 
 async def request_agent(message: str, agent_url: str) -> str:
     if agent_url not in CLIENT_CACHE:
         logger.info(f"Descobrindo AgentCard em {agent_url}")
-
-        resolver = A2ACardResolver(
-            httpx_client=HTTPX_CLIENT,
-            base_url=agent_url,
-        )
-
+        resolver = A2ACardResolver(httpx_client=HTTPX_CLIENT, base_url=agent_url)
         agent_card = await resolver.get_agent_card()
         logger.info(f"Agent encontrado: {agent_card.name}")
 
-        config = ClientConfig(
-            httpx_client=HTTPX_CLIENT,
-            streaming=False,
-        )
+        config = ClientConfig(httpx_client=HTTPX_CLIENT, streaming=False)
         factory = ClientFactory(config)
         CLIENT_CACHE[agent_url] = factory.create(agent_card)
 
@@ -55,8 +53,6 @@ async def request_agent(message: str, agent_url: str) -> str:
         message_id=str(uuid.uuid4()),
         parts=[Part(root=TextPart(text=message))],
     )
-
-    logger.info(f"Enviando mensagem para agente: {message}")
 
     async for event in client.send_message(msg):
         if isinstance(event, Message):
@@ -85,18 +81,14 @@ async def node_cartao_credito(state: SupervisorState) -> dict:
 
 def router(state: SupervisorState):
     session_id = state["session_id"]
-    agentes = classificar_pergunta(state["query"])
+    agentes = classificar_pergunta(state["query"], thread_id=session_id)
 
     if not agentes:
-        # Sem intenção clara nessa mensagem: reaproveita o último agente
-        # usado nessa sessão, se existir (continuação de um fluxo já iniciado).
         agentes = SESSION_LAST_AGENTS.get(session_id, [])
         if agentes:
-            logger.info(f"Sem intenção explícita, reaproveitando última rota da sessão: {agentes}")
+            logger.info(f"Sem intenção explícita, reaproveitando última rota: {agentes}")
     else:
         SESSION_LAST_AGENTS[session_id] = agentes
-
-    logger.info(f"Agentes selecionados: {agentes}")
 
     destinos = []
     if "abrir_conta" in agentes:
@@ -104,13 +96,18 @@ def router(state: SupervisorState):
     if "cartao_credito" in agentes:
         destinos.append(Send("cartao_credito_node", state))
 
+    return destinos, agentes
+
+
+def _router_wrapper(state: SupervisorState):
+    destinos, _ = router(state)
     return destinos
 
 
 builder = StateGraph(SupervisorState)
 builder.add_node("abrir_conta_node", node_abrir_conta)
 builder.add_node("cartao_credito_node", node_cartao_credito)
-builder.add_conditional_edges(START, router, ["abrir_conta_node", "cartao_credito_node"])
+builder.add_conditional_edges(START, _router_wrapper, ["abrir_conta_node", "cartao_credito_node"])
 builder.add_edge("abrir_conta_node", END)
 builder.add_edge("cartao_credito_node", END)
 
@@ -122,8 +119,91 @@ async def executar_supervisor(texto_usuario: str, session_id: str = "default") -
         {"query": texto_usuario, "session_id": session_id, "respostas": []}
     )
     respostas = resultado.get("respostas", [])
-
     if not respostas:
         return "Não consegui entender sua solicitação"
-
     return "\n\n".join(respostas)
+
+
+async def executar_supervisor_stream(input_data: RunAgentInput) -> AsyncGenerator[BaseEvent, None]:
+    """
+    Versão do supervisor que fala o protocolo AG-UI: emite eventos incrementais
+    (início/conteúdo/fim de mensagem + snapshot de state) em vez de devolver
+    uma única resposta pronta, como o /chat tradicional faz.
+    """
+    session_id = input_data.thread_id
+    assistant_id = str(uuid.uuid4())
+
+    user_messages = [m for m in input_data.messages if m.role == "user"]
+    user_message = user_messages[-1].content if user_messages else ""
+
+    state = {"agentes": [], "respostas": []}
+
+    # Início da mensagem do assistant
+    yield TextMessageStartEvent(
+        type=EventType.TEXT_MESSAGE_START,
+        message_id=assistant_id,
+        role="assistant",
+    )
+
+    # Mensagem inicial
+    yield TextMessageContentEvent(
+        type=EventType.TEXT_MESSAGE_CONTENT,
+        message_id=assistant_id,
+        delta="Analisando sua solicitação...\n\n",
+    )
+
+    # Classificação de agentes
+    agentes = classificar_pergunta(user_message, thread_id=session_id)
+
+    if not agentes:
+        agentes = SESSION_LAST_AGENTS.get(session_id, [])
+    else:
+        SESSION_LAST_AGENTS[session_id] = agentes
+
+    yield TextMessageContentEvent(
+        type=EventType.TEXT_MESSAGE_CONTENT,
+        message_id=assistant_id,
+        delta=f"Agentes selecionados: {', '.join(agentes)}\n\n",
+    )
+
+    state["agentes"] = agentes
+    yield StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=state)
+
+    # Chama cada agente selecionado
+    respostas = []
+    for agent_name in agentes:
+        if agent_name not in AGENTS:
+            continue
+
+        yield TextMessageContentEvent(
+            type=EventType.TEXT_MESSAGE_CONTENT,
+            message_id=assistant_id,
+            delta=f"Chamando agente: {agent_name}...\n",
+        )
+
+        resposta = await request_agent(user_message, AGENTS[agent_name])
+        respostas.append(resposta)
+
+        yield TextMessageContentEvent(
+            type=EventType.TEXT_MESSAGE_CONTENT,
+            message_id=assistant_id,
+            delta=f"{agent_name} respondeu\n\n",
+        )
+
+        state["respostas"].append({agent_name: resposta})
+        yield StateSnapshotEvent(type=EventType.STATE_SNAPSHOT, snapshot=state)
+
+    # Resultado final
+    resposta_final = "\n\n".join(respostas) if respostas else "Não consegui entender sua solicitação"
+
+    yield TextMessageContentEvent(
+        type=EventType.TEXT_MESSAGE_CONTENT,
+        message_id=assistant_id,
+        delta=f"Resultado final:\n\n{resposta_final}",
+    )
+
+    # Fim da mensagem
+    yield TextMessageEndEvent(
+        type=EventType.TEXT_MESSAGE_END,
+        message_id=assistant_id,
+    )

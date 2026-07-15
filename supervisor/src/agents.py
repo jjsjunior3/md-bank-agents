@@ -2,6 +2,9 @@ import logging
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import os
@@ -45,9 +48,29 @@ prompt = PromptTemplate(
 
 classificador = prompt | llm | parser
 
+# Memória do próprio classificador/roteador — o supervisor também "lembra"
+# do contexto da conversa, não só os agentes de domínio.
+router_memory = InMemorySaver()
 
-def classificar_pergunta(pergunta: str) -> list[str]:
+router_agent = create_agent(
+    llm,
+    tools=[],
+    system_prompt="Você ajuda a manter contexto de conversas bancárias do MDBank.",
+    checkpointer=router_memory,
+)
+
+
+def classificar_pergunta(pergunta: str, thread_id: str = "1") -> list[str]:
     resultado = classificador.invoke({"pergunta": pergunta})
     agentes = resultado.get("agentes", [])
     logger.info(f"Agentes selecionados: {agentes}")
+
+    # Mantém o router_agent "ciente" da conversa (mesmo padrão de thread_id
+    # usado pelos agentes de domínio), preparando terreno para features futuras
+    # que dependam desse contexto compartilhado.
+    router_agent.invoke(
+        {"messages": [HumanMessage(content=pergunta)]},
+        {"configurable": {"thread_id": thread_id}},
+    )
+
     return agentes

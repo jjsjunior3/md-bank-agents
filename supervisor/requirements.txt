@@ -5,5 +5,7 @@ langgraph
 langchain
 langchain_openai
 langchain-community
+langchain-mcp-adapters
 httpx
 python-dotenv
+ag-ui-protocol
