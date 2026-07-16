@@ -8,7 +8,7 @@ from ag_ui.core import RunAgentInput, EventType, RunStartedEvent, RunFinishedEve
 from ag_ui.encoder import EventEncoder
 
 from src.schemas import ChatRequest
-from src.service import executar_supervisor, executar_supervisor_stream
+from src.service import executar_supervisor, executar_supervisor_bfa, executar_supervisor_stream
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,15 +30,24 @@ async def chat_endpoint(payload: ChatRequest):
         return JSONResponse(status_code=400, content={"error": "Campo 'message' é obrigatório"})
 
     try:
-        logger.info(f"Mensagem recebida no /chat: {payload.message}")
-        resposta = await executar_supervisor(
-            texto_usuario=payload.message,
-            session_id=payload.session_id,
-        )
-        logger.info(f"Resposta gerada: {resposta}")
+        resposta = await executar_supervisor(texto_usuario=payload.message, session_id=payload.session_id)
         return {"resposta": resposta}
     except Exception as e:
         logger.exception("Erro ao processar requisição no endpoint /chat")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/chat-bfa")
+async def chat_bfa_endpoint(payload: ChatRequest):
+    """Mesmo contrato do /chat, mas usando descoberta dinâmica via BFA."""
+    if not payload.message:
+        return JSONResponse(status_code=400, content={"error": "Campo 'message' é obrigatório"})
+
+    try:
+        resposta = await executar_supervisor_bfa(texto_usuario=payload.message, session_id=payload.session_id)
+        return {"resposta": resposta}
+    except Exception as e:
+        logger.exception("Erro ao processar requisição no endpoint /chat-bfa")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
@@ -55,10 +64,8 @@ async def agent_endpoint(input_data: RunAgentInput, request: Request):
                 run_id=input_data.run_id,
             ))
         )
-
         async for event in executar_supervisor_stream(input_data):
             yield encoder.encode(cast(BaseEvent, event))
-
         yield encoder.encode(
             cast(BaseEvent, RunFinishedEvent(
                 type=EventType.RUN_FINISHED,

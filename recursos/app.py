@@ -5,6 +5,8 @@ from typing import Optional, Dict, Any
 
 from fastmcp import FastMCP, Context
 from fastmcp.prompts import Message
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 mcp = FastMCP("MDBank")
 DB_FILE = "/app/db.json"
@@ -90,7 +92,12 @@ def solicitar_cartao_prompt(cpf: str, tipo: str):
 
 # ===================== TOOLS (ações) =====================
 
-@mcp.tool
+@mcp.tool(
+    name="consultar_conta",
+    description="Verifica se já existe uma conta cadastrada para o CPF informado.",
+    tags={"conta", "consulta", "verificacao"},
+    meta={"examples": ["tenho conta?", "já sou cliente?", "verificar minha conta"]},
+)
 async def consultar_conta(cpf: str, ctx: Context):
     resource = await ctx.read_resource(f"conta://{cpf}")
     data = extract_resource_data(resource)
@@ -99,7 +106,12 @@ async def consultar_conta(cpf: str, ctx: Context):
     return {"existe": True, "conta": data}
 
 
-@mcp.tool
+@mcp.tool(
+    name="criar_ou_buscar_conta",
+    description="Cria uma nova conta bancária, ou retorna a conta existente se o CPF já estiver cadastrado.",
+    tags={"conta", "abrir conta", "cadastro"},
+    meta={"examples": ["quero abrir uma conta", "criar conta nova", "como abro uma conta"]},
+)
 async def criar_ou_buscar_conta(nome: str, cpf: str, ctx: Context):
     cpf = cpf.strip()
     await ctx.info(f"[Conta] Processando CPF {cpf}")
@@ -115,7 +127,12 @@ async def criar_ou_buscar_conta(nome: str, cpf: str, ctx: Context):
     return {"status": "criada", "conta": conta}
 
 
-@mcp.tool
+@mcp.tool(
+    name="solicitar_cartao",
+    description="Solicita um cartão de crédito para uma conta já existente.",
+    tags={"cartao", "cartao de credito", "solicitacao"},
+    meta={"examples": ["quero um cartão de crédito", "solicitar cartão", "como funciona o cartão de crédito"]},
+)
 async def solicitar_cartao(cpf: str, tipo: str, ctx: Context):
     cpf = cpf.strip()
     await ctx.info(f"[Cartão] Solicitação para CPF {cpf}")
@@ -140,7 +157,29 @@ async def solicitar_cartao(cpf: str, tipo: str, ctx: Context):
     return {"status": "criado", "cartao": cartao}
 
 
-@mcp.tool
+@mcp.tool(
+    name="gerar_prompt_abertura",
+    description="Gera um prompt estruturado padrão para conduzir o fluxo de abertura de conta.",
+    tags={"conta", "prompt", "template"},
+    meta={"examples": []},
+)
 async def gerar_prompt_abertura(nome: str, cpf: str, ctx: Context):
     prompt = await ctx.get_prompt("abrir_conta_prompt", {"nome": nome, "cpf": cpf})
     return [m.content for m in prompt.messages]
+
+
+@mcp.custom_route("/tools", methods=["GET"])
+async def list_tools_route(request: Request) -> JSONResponse:
+    tools = await mcp.list_tools()
+    data = []
+    for t in tools:
+        data.append({
+            "name": t.name,
+            "description": t.description or "",
+            "inputSchema": t.parameters,
+            "annotations": {
+                "tags": list(t.tags) if t.tags else [],
+                "examples": (t.meta or {}).get("examples", []),
+            },
+        })
+    return JSONResponse(data)

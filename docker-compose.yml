@@ -7,6 +7,8 @@ services:
       - "8080:8000"
     volumes:
       - ./supervisor:/app
+    depends_on:
+      - bfa
 
   abrir_conta_agent:
     container_name: abrir_conta_agent
@@ -49,3 +51,15 @@ services:
       - CHOKIDAR_INTERVAL=1000
       - FAST_REFRESH=true
     command: npm start
+
+  bfa:
+    build: ./bfa
+    container_name: bfa
+    volumes:
+      - ./bfa:/app
+    ports:
+      - "8083:8000"
+    depends_on:
+      - recursos
+      - abrir_conta_agent
+      - cartao_credito_agent
